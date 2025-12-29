@@ -267,6 +267,7 @@
               name="client_mac"
               value="{{ client_mac or '' }}"
             >
+            <input type="hidden" name="url" value="{{ return_url or '' }}">
             <button type="submit">Connect as guest</button>
           </form>
         </div>

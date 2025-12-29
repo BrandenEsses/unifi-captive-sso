@@ -6,6 +6,7 @@ from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
+from urllib.parse import urlparse
 
 from authlib.integrations.flask_client import OAuth
 from flask import (
@@ -268,6 +269,26 @@ def _parse_bool(value: str) -> bool:
 def _parse_minutes(value, fallback: int) -> int:
     if value is None:
         return fallback
+
+
+def sanitize_return_url(value):
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    return value
+
+
+def store_return_url(req):
+    url_value = req.args.get("url") or req.form.get("url")
+    safe_url = sanitize_return_url(url_value)
+    if safe_url:
+        session["return_url"] = safe_url
+
+
+def pop_return_url():
+    return sanitize_return_url(session.pop("return_url", None))
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -386,6 +407,7 @@ def create_app() -> Flask:
     def index(site=None):
         if site:
             session["unifi_site"] = site
+        store_return_url(request)
         client_mac = extract_client_mac_from_request(request) or session.get(
             "client_mac"
         )
@@ -400,6 +422,7 @@ def create_app() -> Flask:
             guest_password=daily_guest_password() if user else "",
             guest_authenticated=session.get("guest_authenticated", False),
             client_mac=client_mac,
+            return_url=session.get("return_url"),
             messages=get_flashed_messages(with_categories=True),
         )
 
@@ -442,7 +465,8 @@ def create_app() -> Flask:
                 site=session.get("unifi_site"),
             )
             flash(message, "success" if ok else "error")
-        return redirect(url_for("index"))
+        return_url = pop_return_url()
+        return redirect(return_url or url_for("index"))
 
     @app.get("/success")
     def success():
@@ -469,6 +493,7 @@ def create_app() -> Flask:
 
     @app.post("/guest/authorize")
     def authorize_guest():
+        store_return_url(request)
         entered = request.form.get("guest_password", "").strip().lower()
         expected = daily_guest_password()
         if not expected:
@@ -498,7 +523,8 @@ def create_app() -> Flask:
             site=session.get("unifi_site"),
         )
         flash(message, "success" if ok else "error")
-        return redirect(url_for("index"))
+        return_url = pop_return_url()
+        return redirect(return_url or url_for("index"))
 
     @app.get("/status")
     def status():
