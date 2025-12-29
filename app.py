@@ -482,7 +482,11 @@ def create_app() -> Flask:
             session.get("client_mac", "")
         )
         if not mac or not MAC_RE.match(mac):
-            flash("Missing or invalid client MAC address.", "error")
+            flash(
+                "Missing or invalid client MAC address. Open the portal from the "
+                "device you want to authorize.",
+                "error",
+            )
             return redirect(url_for("index"))
 
         session["guest_authenticated"] = True
@@ -498,6 +502,8 @@ def create_app() -> Flask:
 
     @app.get("/status")
     def status():
+        if not session.get("guest_authenticated"):
+            return jsonify({"status": "unauthorized"}), 401
         mac = session.get("client_mac") or extract_client_mac_from_request(request)
         if not mac or not MAC_RE.match(mac):
             return jsonify({"status": "error", "message": "Missing MAC address."}), 400
