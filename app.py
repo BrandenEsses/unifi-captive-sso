@@ -192,13 +192,13 @@ def parse_unifi_status_payload(payload):
     return "pending", "Waiting for authorization."
 
 
-def unifi_client_status(app: Flask, mac: str):
+def unifi_client_status(app: Flask, mac: str, site=None):
     session_client, error = unifi_login_session(app)
     if error:
         return "error", error
 
     base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
-    site = app.config.get("UNIFI_SITE", "default")
+    site = site or app.config.get("UNIFI_SITE", "default")
 
     mac_path = quote(mac, safe="")
     endpoints = [
@@ -229,13 +229,13 @@ def unifi_client_status(app: Flask, mac: str):
     return "error", last_error or "UniFi status failed."
 
 
-def unifi_authorize_mac(app: Flask, mac: str, minutes=None):
+def unifi_authorize_mac(app: Flask, mac: str, minutes=None, site=None):
     session_client, error = unifi_login_session(app)
     if error:
         return False, error
 
     base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
-    site = app.config.get("UNIFI_SITE", "default")
+    site = site or app.config.get("UNIFI_SITE", "default")
     if minutes is None:
         minutes = app.config.get("UNIFI_AUTHORIZE_MINUTES", DEFAULT_AUTHORIZE_MINUTES)
 
@@ -381,7 +381,11 @@ def create_app() -> Flask:
         )
 
     @app.get("/")
-    def index():
+    @app.get("/guest/s/<site>/")
+    @app.get("/guest/s/<site>")
+    def index(site=None):
+        if site:
+            session["unifi_site"] = site
         client_mac = extract_client_mac_from_request(request) or session.get(
             "client_mac"
         )
@@ -435,6 +439,7 @@ def create_app() -> Flask:
                 app,
                 client_mac,
                 minutes=app.config.get("UNIFI_SSO_MINUTES", DEFAULT_SSO_MINUTES),
+                site=session.get("unifi_site"),
             )
             flash(message, "success" if ok else "error")
         return redirect(url_for("index"))
@@ -457,6 +462,7 @@ def create_app() -> Flask:
             app,
             mac,
             minutes=app.config.get("UNIFI_SSO_MINUTES", DEFAULT_SSO_MINUTES),
+            site=session.get("unifi_site"),
         )
         flash(message, "success" if ok else "error")
         return redirect(url_for("index"))
@@ -485,6 +491,7 @@ def create_app() -> Flask:
             app,
             mac,
             minutes=app.config.get("UNIFI_GUEST_MINUTES", DEFAULT_GUEST_MINUTES),
+            site=session.get("unifi_site"),
         )
         flash(message, "success" if ok else "error")
         return redirect(url_for("index"))
@@ -494,7 +501,9 @@ def create_app() -> Flask:
         mac = session.get("client_mac") or extract_client_mac_from_request(request)
         if not mac or not MAC_RE.match(mac):
             return jsonify({"status": "error", "message": "Missing MAC address."}), 400
-        status_value, message = unifi_client_status(app, mac)
+        status_value, message = unifi_client_status(
+            app, mac, site=session.get("unifi_site")
+        )
         return jsonify({"status": status_value, "message": message, "mac": mac})
 
     @app.get("/logout")
