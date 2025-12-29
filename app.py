@@ -5,6 +5,7 @@ import re
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 from authlib.integrations.flask_client import OAuth
 from flask import (
@@ -156,30 +157,24 @@ def unifi_login_session(app: Flask):
     return session_client, None
 
 
-def unifi_client_status(app: Flask, mac: str):
-    session_client, error = unifi_login_session(app)
-    if error:
-        return "error", error
-
-    base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
-    site = app.config.get("UNIFI_SITE", "default")
-
+def unifi_error_message(response, fallback: str) -> str:
     try:
-        status_response = session_client.get(
-            f"{base_url}/proxy/network/api/s/{site}/stat/sta/{mac}",
-            timeout=10,
-        )
-    except requests.RequestException as exc:
-        return "error", f"UniFi request failed: {exc}"
-
-    if not status_response.ok:
-        return "error", f"UniFi status failed ({status_response.status_code})."
-
-    try:
-        payload = status_response.json()
+        payload = response.json()
     except ValueError:
-        return "error", "UniFi returned non-JSON."
+        return fallback
+    if isinstance(payload, dict):
+        meta = payload.get("meta")
+        if isinstance(meta, dict):
+            msg = meta.get("msg") or meta.get("message")
+            if msg:
+                return f"{fallback} {msg}"
+        message = payload.get("message")
+        if message:
+            return f"{fallback} {message}"
+    return fallback
 
+
+def parse_unifi_status_payload(payload):
     data = payload.get("data") if isinstance(payload, dict) else None
     if not data:
         return "not_found", "Device not visible yet."
@@ -195,6 +190,43 @@ def unifi_client_status(app: Flask, mac: str):
         return "authorized", "Device is authorized."
 
     return "pending", "Waiting for authorization."
+
+
+def unifi_client_status(app: Flask, mac: str):
+    session_client, error = unifi_login_session(app)
+    if error:
+        return "error", error
+
+    base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
+    site = app.config.get("UNIFI_SITE", "default")
+
+    mac_path = quote(mac, safe="")
+    endpoints = [
+        f"{base_url}/proxy/network/api/s/{site}/stat/sta/{mac_path}",
+        f"{base_url}/proxy/network/api/s/{site}/stat/sta?mac={mac}",
+    ]
+
+    last_error = None
+    for url in endpoints:
+        try:
+            status_response = session_client.get(url, timeout=10)
+        except requests.RequestException as exc:
+            return "error", f"UniFi request failed: {exc}"
+
+        if status_response.ok:
+            try:
+                payload = status_response.json()
+            except ValueError:
+                return "error", "UniFi returned non-JSON."
+            return parse_unifi_status_payload(payload)
+
+        last_error = unifi_error_message(
+            status_response, f"UniFi status failed ({status_response.status_code})."
+        )
+        if status_response.status_code not in (400, 404):
+            return "error", last_error
+
+    return "error", last_error or "UniFi status failed."
 
 
 def unifi_authorize_mac(app: Flask, mac: str, minutes=None):
