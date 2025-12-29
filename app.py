@@ -25,6 +25,9 @@ DEFAULT_AUTHORIZE_MINUTES = 480
 DEFAULT_GUEST_MINUTES = 1440
 DEFAULT_SSO_MINUTES = 43200
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
+MAC_PATTERN = re.compile(
+    r"(?:(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12})"
+)
 
 
 @lru_cache(maxsize=1)
@@ -65,11 +68,52 @@ def normalize_mac(value: str):
     return ":".join(cleaned[i : i + 2] for i in range(0, 12, 2))
 
 
+def find_mac_in_text(value: str):
+    if not value:
+        return None
+    match = MAC_PATTERN.search(value)
+    if not match:
+        return None
+    return normalize_mac(match.group(0))
+
+
 def extract_client_mac(args):
-    for key in ("client_mac", "mac", "id"):
+    for key in (
+        "client_mac",
+        "clientmac",
+        "client-mac",
+        "mac",
+        "id",
+        "client_id",
+        "client-id",
+        "sta",
+    ):
         value = normalize_mac(args.get(key, "").strip())
         if value and MAC_RE.match(value):
             return value
+    for value in args.values():
+        candidate = normalize_mac(str(value))
+        if candidate and MAC_RE.match(candidate):
+            return candidate
+        candidate = find_mac_in_text(str(value))
+        if candidate and MAC_RE.match(candidate):
+            return candidate
+    return None
+
+
+def extract_client_mac_from_request(req):
+    for source in (req.args, req.form):
+        mac = extract_client_mac(source)
+        if mac:
+            return mac
+    for header in ("X-Client-MAC", "X-Auth-Client-MAC", "X-Device-MAC"):
+        mac = normalize_mac(req.headers.get(header, ""))
+        if mac and MAC_RE.match(mac):
+            return mac
+    if req.referrer:
+        mac = find_mac_in_text(req.referrer)
+        if mac and MAC_RE.match(mac):
+            return mac
     return None
 
 
@@ -306,10 +350,11 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        client_mac = extract_client_mac(request.args)
+        client_mac = extract_client_mac_from_request(request) or session.get(
+            "client_mac"
+        )
         if client_mac:
             session["client_mac"] = client_mac
-        client_mac = session.get("client_mac")
         user = session.get("user")
         return render_template(
             "index.html",
@@ -348,7 +393,11 @@ def create_app() -> Flask:
             or userinfo.get("preferred_username")
             or userinfo.get("email"),
         }
-        client_mac = session.get("client_mac")
+        client_mac = session.get("client_mac") or extract_client_mac_from_request(
+            request
+        )
+        if client_mac:
+            session["client_mac"] = client_mac
         if client_mac:
             ok, message = unifi_authorize_mac(
                 app,
@@ -391,10 +440,8 @@ def create_app() -> Flask:
             flash("Guest password is incorrect.", "error")
             return redirect(url_for("index"))
 
-        mac = (
-            extract_client_mac(request.form)
-            or extract_client_mac(request.args)
-            or normalize_mac(session.get("client_mac", ""))
+        mac = extract_client_mac_from_request(request) or normalize_mac(
+            session.get("client_mac", "")
         )
         if not mac or not MAC_RE.match(mac):
             flash("Missing or invalid client MAC address.", "error")
@@ -412,7 +459,7 @@ def create_app() -> Flask:
 
     @app.get("/status")
     def status():
-        mac = session.get("client_mac") or extract_client_mac(request.args)
+        mac = session.get("client_mac") or extract_client_mac_from_request(request)
         if not mac or not MAC_RE.match(mac):
             return jsonify({"status": "error", "message": "Missing MAC address."}), 400
         status_value, message = unifi_client_status(app, mac)
