@@ -101,6 +101,21 @@
         border: 1px solid var(--border);
         font-size: 16px;
       }
+      .guest button {
+        align-self: flex-start;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 16px;
+        background: #22211c;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .guest button:hover {
+        background: #0f0f0c;
+        transform: translateY(-1px);
+      }
       .alert {
         margin-top: 18px;
         padding: 12px 14px;
@@ -237,15 +252,20 @@
 
         <div class="row">
           <a class="cta" href="{{ url_for('login') }}">Login with SSO</a>
-          <div class="guest">
+          <form class="guest" method="post" action="{{ url_for('authorize_guest') }}">
             <label for="guest-password">Guest password</label>
             <input
               id="guest-password"
               name="guest_password"
               type="password"
               placeholder="Enter guest password"
+              autocomplete="off"
             >
-          </div>
+            {% if client_mac %}
+              <input type="hidden" name="mac" value="{{ client_mac }}">
+            {% endif %}
+            <button type="submit">Connect as guest</button>
+          </form>
         </div>
 
         {% if messages %}
@@ -263,34 +283,36 @@
           </div>
         {% endif %}
 
-        {% if user %}
+        {% if user or guest_authenticated %}
           <div class="signed-in">
-            <div class="card">
-              <h2>Guest password of the day</h2>
-              {% if guest_password %}
-                <div class="password-display">{{ guest_password }}</div>
-                <div class="helper">Share with guests. Changes daily.</div>
-              {% else %}
-                <div class="helper">Wordlist is missing or empty.</div>
-              {% endif %}
-            </div>
-            <div class="card">
-              <h2>Add a device by MAC</h2>
-              <form class="device-form" method="post" action="{{ url_for('authorize_device') }}">
-                <label for="device-mac">Device MAC address</label>
-                <input
-                  id="device-mac"
-                  name="mac"
-                  type="text"
-                  placeholder="aa:bb:cc:dd:ee:ff"
-                  autocomplete="off"
-                >
-                <button type="submit">Authorize device</button>
-              </form>
-              {% if not unifi_configured %}
-                <div class="helper">UniFi API is not configured yet.</div>
-              {% endif %}
-            </div>
+            {% if user %}
+              <div class="card">
+                <h2>Guest password of the day</h2>
+                {% if guest_password %}
+                  <div class="password-display">{{ guest_password }}</div>
+                  <div class="helper">Share with guests. Changes daily.</div>
+                {% else %}
+                  <div class="helper">Wordlist is missing or empty.</div>
+                {% endif %}
+              </div>
+              <div class="card">
+                <h2>Add a device by MAC</h2>
+                <form class="device-form" method="post" action="{{ url_for('authorize_device') }}">
+                  <label for="device-mac">Device MAC address</label>
+                  <input
+                    id="device-mac"
+                    name="mac"
+                    type="text"
+                    placeholder="aa:bb:cc:dd:ee:ff"
+                    autocomplete="off"
+                  >
+                  <button type="submit">Authorize device</button>
+                </form>
+                {% if not unifi_configured %}
+                  <div class="helper">UniFi API is not configured yet.</div>
+                {% endif %}
+              </div>
+            {% endif %}
             <div class="card" data-status-panel>
               <h2>Device status</h2>
               {% if client_mac %}
@@ -313,7 +335,7 @@
         {% endif %}
       </div>
     </div>
-    {% if user and client_mac %}
+    {% if (user or guest_authenticated) and client_mac %}
       <script>
         (() => {
           const panel = document.querySelector("[data-status-panel]");

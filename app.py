@@ -22,6 +22,8 @@ import requests
 
 
 DEFAULT_AUTHORIZE_MINUTES = 480
+DEFAULT_GUEST_MINUTES = 1440
+DEFAULT_SSO_MINUTES = 43200
 MAC_RE = re.compile(r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 
 
@@ -141,14 +143,15 @@ def unifi_client_status(app: Flask, mac: str):
     return "pending", "Waiting for authorization."
 
 
-def unifi_authorize_mac(app: Flask, mac: str):
+def unifi_authorize_mac(app: Flask, mac: str, minutes=None):
     session_client, error = unifi_login_session(app)
     if error:
         return False, error
 
     base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
     site = app.config.get("UNIFI_SITE", "default")
-    minutes = app.config.get("UNIFI_AUTHORIZE_MINUTES", DEFAULT_AUTHORIZE_MINUTES)
+    if minutes is None:
+        minutes = app.config.get("UNIFI_AUTHORIZE_MINUTES", DEFAULT_AUTHORIZE_MINUTES)
 
     try:
         authorize_response = session_client.post(
@@ -174,6 +177,15 @@ def unifi_authorize_mac(app: Flask, mac: str):
 
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_minutes(value, fallback: int) -> int:
+    if value is None:
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def load_config(app: Flask) -> None:
@@ -207,13 +219,36 @@ def load_config(app: Flask) -> None:
     authorize_minutes = env_or_section(
         "UNIFI_AUTHORIZE_MINUTES", unifi, "authorize_minutes"
     )
-    if authorize_minutes is None:
-        app.config["UNIFI_AUTHORIZE_MINUTES"] = DEFAULT_AUTHORIZE_MINUTES
+    parsed_authorize_minutes = _parse_minutes(
+        authorize_minutes, DEFAULT_AUTHORIZE_MINUTES
+    )
+    app.config["UNIFI_AUTHORIZE_MINUTES"] = parsed_authorize_minutes
+
+    guest_minutes = env_or_section("UNIFI_GUEST_MINUTES", unifi, "guest_minutes")
+    if guest_minutes is None:
+        guest_fallback = (
+            parsed_authorize_minutes
+            if authorize_minutes is not None
+            else DEFAULT_GUEST_MINUTES
+        )
+        app.config["UNIFI_GUEST_MINUTES"] = guest_fallback
     else:
-        try:
-            app.config["UNIFI_AUTHORIZE_MINUTES"] = int(authorize_minutes)
-        except ValueError:
-            app.config["UNIFI_AUTHORIZE_MINUTES"] = DEFAULT_AUTHORIZE_MINUTES
+        app.config["UNIFI_GUEST_MINUTES"] = _parse_minutes(
+            guest_minutes, DEFAULT_GUEST_MINUTES
+        )
+
+    sso_minutes = env_or_section("UNIFI_SSO_MINUTES", unifi, "sso_minutes")
+    if sso_minutes is None:
+        sso_fallback = (
+            parsed_authorize_minutes
+            if authorize_minutes is not None
+            else DEFAULT_SSO_MINUTES
+        )
+        app.config["UNIFI_SSO_MINUTES"] = sso_fallback
+    else:
+        app.config["UNIFI_SSO_MINUTES"] = _parse_minutes(
+            sso_minutes, DEFAULT_SSO_MINUTES
+        )
 
     verify_ssl_env = os.environ.get("UNIFI_VERIFY_SSL")
     if verify_ssl_env is not None:
@@ -272,6 +307,7 @@ def create_app() -> Flask:
             unifi_configured=unifi_configured(app),
             user=user,
             guest_password=daily_guest_password() if user else "",
+            guest_authenticated=session.get("guest_authenticated", False),
             client_mac=client_mac,
             messages=get_flashed_messages(with_categories=True),
         )
@@ -304,7 +340,11 @@ def create_app() -> Flask:
         }
         client_mac = session.get("client_mac")
         if client_mac:
-            ok, message = unifi_authorize_mac(app, client_mac)
+            ok, message = unifi_authorize_mac(
+                app,
+                client_mac,
+                minutes=app.config.get("UNIFI_SSO_MINUTES", DEFAULT_SSO_MINUTES),
+            )
             flash(message, "success" if ok else "error")
         return redirect(url_for("index"))
 
@@ -322,13 +362,45 @@ def create_app() -> Flask:
             flash("Enter a valid MAC address (aa:bb:cc:dd:ee:ff).", "error")
             return redirect(url_for("index"))
         session["client_mac"] = mac
-        ok, message = unifi_authorize_mac(app, mac)
+        ok, message = unifi_authorize_mac(
+            app,
+            mac,
+            minutes=app.config.get("UNIFI_SSO_MINUTES", DEFAULT_SSO_MINUTES),
+        )
+        flash(message, "success" if ok else "error")
+        return redirect(url_for("index"))
+
+    @app.post("/guest/authorize")
+    def authorize_guest():
+        entered = request.form.get("guest_password", "").strip().lower()
+        expected = daily_guest_password()
+        if not expected:
+            flash("Guest password is not configured.", "error")
+            return redirect(url_for("index"))
+        if entered != expected:
+            flash("Guest password is incorrect.", "error")
+            return redirect(url_for("index"))
+
+        mac = request.form.get("mac", "").strip().lower() or session.get(
+            "client_mac", ""
+        )
+        if not MAC_RE.match(mac):
+            flash("Missing or invalid client MAC address.", "error")
+            return redirect(url_for("index"))
+
+        session["guest_authenticated"] = True
+        session["client_mac"] = mac
+        ok, message = unifi_authorize_mac(
+            app,
+            mac,
+            minutes=app.config.get("UNIFI_GUEST_MINUTES", DEFAULT_GUEST_MINUTES),
+        )
         flash(message, "success" if ok else "error")
         return redirect(url_for("index"))
 
     @app.get("/status")
     def status():
-        if not session.get("user"):
+        if not (session.get("user") or session.get("guest_authenticated")):
             return jsonify({"status": "unauthorized"}), 401
         mac = session.get("client_mac") or request.args.get("mac", "").strip().lower()
         if not mac or not MAC_RE.match(mac):
