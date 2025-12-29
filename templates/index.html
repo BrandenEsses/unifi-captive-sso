@@ -154,8 +154,8 @@
           <div class="alert">{{ error }}</div>
         {% elif not sso_configured %}
           <div class="alert">
-            SSO is not configured yet. Set <code>OIDC_CLIENT_ID</code>,
-            <code>OIDC_CLIENT_SECRET</code>, and <code>OIDC_METADATA_URL</code>.
+            SSO is not configured yet. Set <code>[oidc]</code> values in
+            <code>config.ini</code>.
           </div>
         {% endif %}
 
