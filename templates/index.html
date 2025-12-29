@@ -367,7 +367,6 @@
           const maxAttempts = 20;
           let attempts = 0;
           let mac = panel ? (panel.dataset.mac || "").trim() : "";
-          const returnUrl = panel ? (panel.dataset.returnUrl || "").trim() : "";
 
           const normalizeMac = (value) => {
             if (!value) {
@@ -458,11 +457,6 @@
                   setProgress(100);
                   setAuthMessage("Device is authorized.");
                   clearInterval(timer);
-                  if (returnUrl) {
-                    setTimeout(() => {
-                      window.location.href = returnUrl;
-                    }, 1500);
-                  }
                   return;
                 }
                 if (data.status === "blocked") {

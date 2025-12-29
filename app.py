@@ -34,6 +34,8 @@ CONNECTIVITY_HOST = "8.8.8.8"
 CONNECTIVITY_PORT = 53
 CONNECTIVITY_TTL_SECONDS = 10
 _CONNECTIVITY_CACHE = {"ts": 0.0, "ok": None, "message": "", "method": ""}
+UNIFI_SESSION_TTL_SECONDS = 60
+_UNIFI_SESSION_CACHE = {"ts": 0.0, "cookies": None, "csrf": None}
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
 MAC_PATTERN = re.compile(
     r"(?:(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12})"
@@ -134,12 +136,29 @@ def unifi_configured(app: Flask) -> bool:
     )
 
 
-def unifi_login_session(app: Flask):
+def unifi_login_session(app: Flask, force=False):
     if not unifi_configured(app):
         return None, "UniFi config is missing base_url, username, or password."
 
     base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
     verify_ssl = app.config.get("UNIFI_VERIFY_SSL", True)
+
+    now = time.monotonic()
+    cached = _UNIFI_SESSION_CACHE["cookies"] is not None
+    cache_fresh = now - _UNIFI_SESSION_CACHE["ts"] < UNIFI_SESSION_TTL_SECONDS
+
+    def session_from_cache():
+        cached_session = requests.Session()
+        cached_session.verify = verify_ssl
+        cached_session.cookies.update(_UNIFI_SESSION_CACHE["cookies"])
+        if _UNIFI_SESSION_CACHE["csrf"]:
+            cached_session.headers.update(
+                {"X-CSRF-Token": _UNIFI_SESSION_CACHE["csrf"]}
+            )
+        return cached_session
+
+    if cached and cache_fresh and not force:
+        return session_from_cache(), None
 
     session_client = requests.Session()
     session_client.verify = verify_ssl
@@ -157,11 +176,17 @@ def unifi_login_session(app: Flask):
         return None, f"UniFi request failed: {exc}"
 
     if not login_response.ok:
+        if login_response.status_code == 429 and cached:
+            return session_from_cache(), None
         return None, f"UniFi login failed ({login_response.status_code})."
 
     csrf_token = login_response.headers.get("X-CSRF-Token")
     if csrf_token:
         session_client.headers.update({"X-CSRF-Token": csrf_token})
+
+    _UNIFI_SESSION_CACHE.update(
+        {"ts": now, "cookies": session_client.cookies.copy(), "csrf": csrf_token}
+    )
 
     return session_client, None
 
@@ -280,6 +305,28 @@ def unifi_client_status(app: Flask, mac: str, site=None):
                 return "error", "UniFi returned non-JSON."
             return parse_unifi_status_payload(payload)
 
+        if status_response.status_code in (401, 403):
+            session_client, error = unifi_login_session(app, force=True)
+            if error:
+                return "error", error
+            try:
+                retry_response = session_client.get(url, timeout=10)
+            except requests.RequestException as exc:
+                return "error", f"UniFi request failed: {exc}"
+            if retry_response.ok:
+                try:
+                    payload = retry_response.json()
+                except ValueError:
+                    return "error", "UniFi returned non-JSON."
+                return parse_unifi_status_payload(payload)
+            last_error = unifi_error_message(
+                retry_response,
+                f"UniFi status failed ({retry_response.status_code}).",
+            )
+            if retry_response.status_code not in (400, 404):
+                return "error", last_error
+            continue
+
         last_error = unifi_error_message(
             status_response, f"UniFi status failed ({status_response.status_code})."
         )
@@ -299,14 +346,27 @@ def unifi_authorize_mac(app: Flask, mac: str, minutes=None, site=None):
     if minutes is None:
         minutes = app.config.get("UNIFI_AUTHORIZE_MINUTES", DEFAULT_AUTHORIZE_MINUTES)
 
-    try:
-        authorize_response = session_client.post(
-            f"{base_url}/proxy/network/api/s/{site}/cmd/stamgr",
-            json={"cmd": "authorize-guest", "mac": mac, "minutes": minutes},
-            timeout=10,
-        )
-    except requests.RequestException as exc:
-        return False, f"UniFi request failed: {exc}"
+    def do_authorize(client):
+        try:
+            return client.post(
+                f"{base_url}/proxy/network/api/s/{site}/cmd/stamgr",
+                json={"cmd": "authorize-guest", "mac": mac, "minutes": minutes},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            return exc
+
+    authorize_response = do_authorize(session_client)
+    if isinstance(authorize_response, Exception):
+        return False, f"UniFi request failed: {authorize_response}"
+
+    if authorize_response.status_code in (401, 403):
+        session_client, error = unifi_login_session(app, force=True)
+        if error:
+            return False, error
+        authorize_response = do_authorize(session_client)
+        if isinstance(authorize_response, Exception):
+            return False, f"UniFi request failed: {authorize_response}"
 
     if not authorize_response.ok:
         return False, f"UniFi authorize failed ({authorize_response.status_code})."
