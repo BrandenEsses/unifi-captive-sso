@@ -128,4 +128,4 @@ def create_app() -> Flask:
     return app
 
 
-app = create_app(env='dev')
+app = create_app()
