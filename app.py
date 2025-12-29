@@ -1,9 +1,175 @@
 import configparser
+import hashlib
 import os
+import re
+from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 from authlib.integrations.flask_client import OAuth
-from flask import Flask, redirect, render_template, session, url_for
+from flask import (
+    Flask,
+    flash,
+    get_flashed_messages,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+import requests
+
+
+DEFAULT_AUTHORIZE_MINUTES = 480
+MAC_RE = re.compile(r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+
+@lru_cache(maxsize=1)
+def load_wordlist():
+    wordlist_path = Path(__file__).resolve().parent / "wordlist.txt"
+    try:
+        contents = wordlist_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    words = []
+    for line in contents.splitlines():
+        word = line.strip().lower()
+        if not word or word.startswith("#"):
+            continue
+        words.append(word)
+    return words
+
+
+def daily_guest_password() -> str:
+    words = load_wordlist()
+    if len(words) < 2:
+        return ""
+    digest = hashlib.sha256(date.today().isoformat().encode("utf-8")).digest()
+    idx_a = int.from_bytes(digest[:4], "big") % len(words)
+    idx_b = int.from_bytes(digest[4:8], "big") % len(words)
+    if idx_b == idx_a:
+        idx_b = (idx_b + 1) % len(words)
+    return f"{words[idx_a]}{words[idx_b]}"
+
+
+def extract_client_mac(args):
+    for key in ("client_mac", "mac", "id"):
+        value = args.get(key, "").strip().lower()
+        if value and MAC_RE.match(value):
+            return value
+    return None
+
+
+def unifi_configured(app: Flask) -> bool:
+    return all(
+        app.config.get(key)
+        for key in ("UNIFI_BASE_URL", "UNIFI_USERNAME", "UNIFI_PASSWORD")
+    )
+
+
+def unifi_login_session(app: Flask):
+    if not unifi_configured(app):
+        return None, "UniFi config is missing base_url, username, or password."
+
+    base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
+    verify_ssl = app.config.get("UNIFI_VERIFY_SSL", True)
+
+    session_client = requests.Session()
+    session_client.verify = verify_ssl
+
+    try:
+        login_response = session_client.post(
+            f"{base_url}/api/auth/login",
+            json={
+                "username": app.config["UNIFI_USERNAME"],
+                "password": app.config["UNIFI_PASSWORD"],
+            },
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        return None, f"UniFi request failed: {exc}"
+
+    if not login_response.ok:
+        return None, f"UniFi login failed ({login_response.status_code})."
+
+    csrf_token = login_response.headers.get("X-CSRF-Token")
+    if csrf_token:
+        session_client.headers.update({"X-CSRF-Token": csrf_token})
+
+    return session_client, None
+
+
+def unifi_client_status(app: Flask, mac: str):
+    session_client, error = unifi_login_session(app)
+    if error:
+        return "error", error
+
+    base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
+    site = app.config.get("UNIFI_SITE", "default")
+
+    try:
+        status_response = session_client.get(
+            f"{base_url}/proxy/network/api/s/{site}/stat/sta/{mac}",
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        return "error", f"UniFi request failed: {exc}"
+
+    if not status_response.ok:
+        return "error", f"UniFi status failed ({status_response.status_code})."
+
+    try:
+        payload = status_response.json()
+    except ValueError:
+        return "error", "UniFi returned non-JSON."
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not data:
+        return "not_found", "Device not visible yet."
+
+    entry = data[0] or {}
+    if entry.get("authorized") is True:
+        return "authorized", "Device is authorized."
+    if entry.get("blocked") is True or entry.get("is_blocked") is True:
+        return "blocked", "Device is blocked."
+
+    state = str(entry.get("state", "")).lower()
+    if state in ("authorized", "auth"):
+        return "authorized", "Device is authorized."
+
+    return "pending", "Waiting for authorization."
+
+
+def unifi_authorize_mac(app: Flask, mac: str):
+    session_client, error = unifi_login_session(app)
+    if error:
+        return False, error
+
+    base_url = app.config["UNIFI_BASE_URL"].rstrip("/")
+    site = app.config.get("UNIFI_SITE", "default")
+    minutes = app.config.get("UNIFI_AUTHORIZE_MINUTES", DEFAULT_AUTHORIZE_MINUTES)
+
+    try:
+        authorize_response = session_client.post(
+            f"{base_url}/proxy/network/api/s/{site}/cmd/stamgr",
+            json={"cmd": "authorize-guest", "mac": mac, "minutes": minutes},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        return False, f"UniFi request failed: {exc}"
+
+    if not authorize_response.ok:
+        return False, f"UniFi authorize failed ({authorize_response.status_code})."
+    try:
+        payload = authorize_response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        rc = payload.get("meta", {}).get("rc")
+        if rc and rc != "ok":
+            return False, payload.get("meta", {}).get("msg", "UniFi error.")
+    return True, f"Authorized {mac} for {minutes} minutes."
 
 
 def _parse_bool(value: str) -> bool:
@@ -37,6 +203,17 @@ def load_config(app: Flask) -> None:
     app.config["UNIFI_SITE"] = env_or_section("UNIFI_SITE", unifi, "site", "default")
     app.config["UNIFI_USERNAME"] = env_or_section("UNIFI_USERNAME", unifi, "username")
     app.config["UNIFI_PASSWORD"] = env_or_section("UNIFI_PASSWORD", unifi, "password")
+
+    authorize_minutes = env_or_section(
+        "UNIFI_AUTHORIZE_MINUTES", unifi, "authorize_minutes"
+    )
+    if authorize_minutes is None:
+        app.config["UNIFI_AUTHORIZE_MINUTES"] = DEFAULT_AUTHORIZE_MINUTES
+    else:
+        try:
+            app.config["UNIFI_AUTHORIZE_MINUTES"] = int(authorize_minutes)
+        except ValueError:
+            app.config["UNIFI_AUTHORIZE_MINUTES"] = DEFAULT_AUTHORIZE_MINUTES
 
     verify_ssl_env = os.environ.get("UNIFI_VERIFY_SSL")
     if verify_ssl_env is not None:
@@ -84,8 +261,19 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
+        client_mac = extract_client_mac(request.args)
+        if client_mac:
+            session["client_mac"] = client_mac
+        client_mac = session.get("client_mac")
+        user = session.get("user")
         return render_template(
-            "index.html", sso_configured=sso_configured(), user=session.get("user")
+            "index.html",
+            sso_configured=sso_configured(),
+            unifi_configured=unifi_configured(app),
+            user=user,
+            guest_password=daily_guest_password() if user else "",
+            client_mac=client_mac,
+            messages=get_flashed_messages(with_categories=True),
         )
 
     @app.get("/login")
@@ -114,11 +302,39 @@ def create_app() -> Flask:
             or userinfo.get("preferred_username")
             or userinfo.get("email"),
         }
-        return redirect(url_for("success"))
+        client_mac = session.get("client_mac")
+        if client_mac:
+            ok, message = unifi_authorize_mac(app, client_mac)
+            flash(message, "success" if ok else "error")
+        return redirect(url_for("index"))
 
     @app.get("/success")
     def success():
         return render_template("success.html", user=session.get("user"))
+
+    @app.post("/devices/authorize")
+    def authorize_device():
+        if not session.get("user"):
+            flash("Sign in with SSO to add devices.", "error")
+            return redirect(url_for("index"))
+        mac = request.form.get("mac", "").strip().lower()
+        if not MAC_RE.match(mac):
+            flash("Enter a valid MAC address (aa:bb:cc:dd:ee:ff).", "error")
+            return redirect(url_for("index"))
+        session["client_mac"] = mac
+        ok, message = unifi_authorize_mac(app, mac)
+        flash(message, "success" if ok else "error")
+        return redirect(url_for("index"))
+
+    @app.get("/status")
+    def status():
+        if not session.get("user"):
+            return jsonify({"status": "unauthorized"}), 401
+        mac = session.get("client_mac") or request.args.get("mac", "").strip().lower()
+        if not mac or not MAC_RE.match(mac):
+            return jsonify({"status": "error", "message": "Missing MAC address."}), 400
+        status_value, message = unifi_client_status(app, mac)
+        return jsonify({"status": status_value, "message": message, "mac": mac})
 
     @app.get("/logout")
     def logout():

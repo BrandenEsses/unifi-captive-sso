@@ -105,10 +105,108 @@
         margin-top: 18px;
         padding: 12px 14px;
         border-radius: 10px;
+        font-size: 14px;
+      }
+      .alert.warning {
         background: #fff4d6;
         border: 1px solid #f0d7a3;
         color: #7a5a1f;
+      }
+      .alert.success {
+        background: #e9f6ec;
+        border: 1px solid #bfe5c7;
+        color: #1e5f32;
+      }
+      .alert.error {
+        background: #ffe8e8;
+        border: 1px solid #f3b7b7;
+        color: #7a1f1f;
+      }
+      .signed-in {
+        margin-top: 26px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 18px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px;
+        background: #fbfaf6;
+      }
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 18px;
+      }
+      .password-display {
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #fff;
+        border: 1px solid var(--border);
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+      }
+      .helper {
+        margin-top: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .device-form {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .device-form label {
         font-size: 14px;
+        color: var(--muted);
+      }
+      .device-form input {
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        font-size: 15px;
+      }
+      .device-form button {
+        align-self: flex-start;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 16px;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .device-form button:hover {
+        background: var(--accent-dark);
+        transform: translateY(-1px);
+      }
+      .status-line {
+        font-size: 14px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .progress {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: #ebe6da;
+        overflow: hidden;
+      }
+      .progress span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+        transition: width 0.3s ease;
+      }
+      .status-message {
+        margin-top: 10px;
+        font-size: 13px;
+        color: var(--muted);
       }
       .foot {
         margin-top: 24px;
@@ -150,12 +248,59 @@
           </div>
         </div>
 
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert {{ category }}">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+
         {% if error %}
-          <div class="alert">{{ error }}</div>
+          <div class="alert error">{{ error }}</div>
         {% elif not sso_configured %}
-          <div class="alert">
+          <div class="alert warning">
             SSO is not configured yet. Set <code>[oidc]</code> values in
             <code>config.ini</code>.
+          </div>
+        {% endif %}
+
+        {% if user %}
+          <div class="signed-in">
+            <div class="card">
+              <h2>Guest password of the day</h2>
+              {% if guest_password %}
+                <div class="password-display">{{ guest_password }}</div>
+                <div class="helper">Share with guests. Changes daily.</div>
+              {% else %}
+                <div class="helper">Wordlist is missing or empty.</div>
+              {% endif %}
+            </div>
+            <div class="card">
+              <h2>Add a device by MAC</h2>
+              <form class="device-form" method="post" action="{{ url_for('authorize_device') }}">
+                <label for="device-mac">Device MAC address</label>
+                <input
+                  id="device-mac"
+                  name="mac"
+                  type="text"
+                  placeholder="aa:bb:cc:dd:ee:ff"
+                  autocomplete="off"
+                >
+                <button type="submit">Authorize device</button>
+              </form>
+              {% if not unifi_configured %}
+                <div class="helper">UniFi API is not configured yet.</div>
+              {% endif %}
+            </div>
+            <div class="card" data-status-panel>
+              <h2>Device status</h2>
+              {% if client_mac %}
+                <div class="status-line">Checking {{ client_mac }}</div>
+                <div class="progress"><span></span></div>
+                <div class="status-message">Starting status check...</div>
+              {% else %}
+                <div class="helper">Sign in from a device to check its status.</div>
+              {% endif %}
+            </div>
           </div>
         {% endif %}
 
@@ -168,5 +313,78 @@
         {% endif %}
       </div>
     </div>
+    {% if user and client_mac %}
+      <script>
+        (() => {
+          const panel = document.querySelector("[data-status-panel]");
+          if (!panel) {
+            return;
+          }
+          const progress = panel.querySelector(".progress span");
+          const message = panel.querySelector(".status-message");
+          const maxAttempts = 20;
+          let attempts = 0;
+
+          const setMessage = (text) => {
+            if (message) {
+              message.textContent = text;
+            }
+          };
+
+          const setProgress = (value) => {
+            if (progress) {
+              const width = Math.min(100, Math.max(0, value));
+              progress.style.width = `${width}%`;
+            }
+          };
+
+          const poll = () => {
+            attempts += 1;
+            setProgress((attempts / maxAttempts) * 100);
+            fetch("{{ url_for('status') }}", { headers: { "Accept": "application/json" } })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.status === "authorized") {
+                  setProgress(100);
+                  setMessage("Device is authorized.");
+                  clearInterval(timer);
+                  return;
+                }
+                if (data.status === "blocked") {
+                  setMessage("Device is blocked. Contact support.");
+                  clearInterval(timer);
+                  return;
+                }
+                if (data.status === "not_found") {
+                  setMessage("Waiting for device to appear in UniFi.");
+                  return;
+                }
+                if (data.status === "pending") {
+                  setMessage("Still waiting for authorization.");
+                  return;
+                }
+                if (data.status === "error") {
+                  setMessage(data.message || "Unable to check device status.");
+                  clearInterval(timer);
+                  return;
+                }
+                setMessage("Checking device status...");
+              })
+              .catch(() => {
+                setMessage("Unable to reach status endpoint.");
+                clearInterval(timer);
+              });
+
+            if (attempts >= maxAttempts) {
+              setMessage("Timed out waiting for authorization.");
+              clearInterval(timer);
+            }
+          };
+
+          poll();
+          const timer = setInterval(poll, 3000);
+        })();
+      </script>
+    {% endif %}
   </body>
 </html>
