@@ -11,8 +11,13 @@ def _parse_bool(value: str) -> bool:
 
 
 def load_config(app: Flask) -> None:
-    config_path = os.environ.get("UNIFI_CONFIG_PATH", "config.ini")
-    config_file = Path(config_path)
+    config_path = os.environ.get("UNIFI_CONFIG_PATH")
+    if config_path:
+        config_file = Path(config_path)
+        if not config_file.is_absolute():
+            config_file = (Path(__file__).resolve().parent / config_file).resolve()
+    else:
+        config_file = Path(__file__).resolve().parent / "config.ini"
     parser = configparser.ConfigParser()
     if config_file.is_file():
         parser.read(config_file)
@@ -123,4 +128,4 @@ def create_app() -> Flask:
     return app
 
 
-app = create_app()
+app = create_app(env='dev')
