@@ -317,22 +317,30 @@
                 {% endif %}
               </div>
             {% endif %}
-            {% if guest_authenticated %}
-              {% if client_mac %}
-                <div class="card" data-status-panel data-mac="{{ client_mac }}">
-                  <h2>Device status</h2>
-                  <div class="status-line">Checking {{ client_mac }}</div>
-                  <div class="progress"><span></span></div>
-                  <div class="status-message">Starting status check...</div>
+            {% if client_mac %}
+              <div
+                class="card"
+                data-status-panel
+                data-mac="{{ client_mac }}"
+                data-return-url="{{ return_url or '' }}"
+              >
+                <h2>Device status</h2>
+                <div class="status-line">Checking {{ client_mac }}</div>
+                <div class="progress"><span></span></div>
+                <div class="status-message" data-status-auth>
+                  Starting status check...
                 </div>
-              {% else %}
-                <div class="card">
-                  <h2>Device status</h2>
-                  <div class="helper">
-                    No device MAC found. Open the portal from the device you want to authorize.
-                  </div>
+                <div class="status-message" data-status-internet>
+                  Checking internet connectivity...
                 </div>
-              {% endif %}
+              </div>
+            {% else %}
+              <div class="card">
+                <h2>Device status</h2>
+                <div class="helper">
+                  No device MAC found. Open the portal from the device you want to authorize.
+                </div>
+              </div>
             {% endif %}
           </div>
         {% endif %}
@@ -350,12 +358,16 @@
         (() => {
           const panel = document.querySelector("[data-status-panel]");
           const progress = panel ? panel.querySelector(".progress span") : null;
-          const message = panel ? panel.querySelector(".status-message") : null;
+          const authMessage = panel ? panel.querySelector("[data-status-auth]") : null;
+          const internetMessage = panel
+            ? panel.querySelector("[data-status-internet]")
+            : null;
           const statusLine = panel ? panel.querySelector(".status-line") : null;
           const guestMacInput = document.getElementById("guest-mac");
           const maxAttempts = 20;
           let attempts = 0;
           let mac = panel ? (panel.dataset.mac || "").trim() : "";
+          const returnUrl = panel ? (panel.dataset.returnUrl || "").trim() : "";
 
           const normalizeMac = (value) => {
             if (!value) {
@@ -398,9 +410,15 @@
             return;
           }
 
-          const setMessage = (text) => {
-            if (message) {
-              message.textContent = text;
+          const setAuthMessage = (text) => {
+            if (authMessage) {
+              authMessage.textContent = text;
+            }
+          };
+
+          const setInternetMessage = (text) => {
+            if (internetMessage) {
+              internetMessage.textContent = text;
             }
           };
 
@@ -424,40 +442,54 @@
             fetch(statusUrl(), { headers: { "Accept": "application/json" } })
               .then((response) => response.json())
               .then((data) => {
+                if (typeof data.internet_ok !== "undefined") {
+                  const internetLabel = data.internet_ok
+                    ? "Internet check (server): ok."
+                    : "Internet check (server): failed.";
+                  const detail = data.internet_message
+                    ? ` ${data.internet_message}`
+                    : "";
+                  setInternetMessage(`${internetLabel}${detail}`);
+                }
                 if (data.mac && !mac) {
                   updateMac(data.mac);
                 }
                 if (data.status === "authorized") {
                   setProgress(100);
-                  setMessage("Device is authorized.");
+                  setAuthMessage("Device is authorized.");
                   clearInterval(timer);
+                  if (returnUrl) {
+                    setTimeout(() => {
+                      window.location.href = returnUrl;
+                    }, 1500);
+                  }
                   return;
                 }
                 if (data.status === "blocked") {
-                  setMessage("Device is blocked. Contact support.");
+                  setAuthMessage("Device is blocked. Contact support.");
                   clearInterval(timer);
                   return;
                 }
                 if (data.status === "not_found") {
-                  setMessage("Waiting for device to appear in UniFi.");
+                  setAuthMessage("Waiting for device to appear in UniFi.");
                   return;
                 }
                 if (data.status === "pending") {
-                  setMessage("Still waiting for authorization.");
+                  setAuthMessage("Still waiting for authorization.");
                   return;
                 }
                 if (data.status === "error") {
-                  setMessage(data.message || "Unable to check device status.");
+                  setAuthMessage(data.message || "Unable to check device status.");
                   return;
                 }
-                setMessage("Checking device status...");
+                setAuthMessage("Checking device status...");
               })
               .catch(() => {
-                setMessage("Unable to reach status endpoint.");
+                setAuthMessage("Unable to reach status endpoint.");
               });
 
             if (attempts >= maxAttempts) {
-              setMessage("Timed out waiting for authorization.");
+              setAuthMessage("Timed out waiting for authorization.");
               clearInterval(timer);
             }
           };

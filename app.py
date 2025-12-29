@@ -2,6 +2,10 @@ import configparser
 import hashlib
 import os
 import re
+import shutil
+import socket
+import subprocess
+import time
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +30,10 @@ import requests
 DEFAULT_AUTHORIZE_MINUTES = 480
 DEFAULT_GUEST_MINUTES = 1440
 DEFAULT_SSO_MINUTES = 43200
+CONNECTIVITY_HOST = "8.8.8.8"
+CONNECTIVITY_PORT = 53
+CONNECTIVITY_TTL_SECONDS = 10
+_CONNECTIVITY_CACHE = {"ts": 0.0, "ok": None, "message": "", "method": ""}
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
 MAC_PATTERN = re.compile(
     r"(?:(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12})"
@@ -156,6 +164,57 @@ def unifi_login_session(app: Flask):
         session_client.headers.update({"X-CSRF-Token": csrf_token})
 
     return session_client, None
+
+
+def check_internet_connectivity():
+    now = time.monotonic()
+    if (
+        _CONNECTIVITY_CACHE["ok"] is not None
+        and now - _CONNECTIVITY_CACHE["ts"] < CONNECTIVITY_TTL_SECONDS
+    ):
+        return (
+            _CONNECTIVITY_CACHE["ok"],
+            _CONNECTIVITY_CACHE["message"],
+            _CONNECTIVITY_CACHE["method"],
+        )
+
+    ping_path = shutil.which("ping")
+    ok = False
+    message = "Ping unavailable."
+    method = "ping"
+
+    if ping_path:
+        try:
+            result = subprocess.run(
+                [ping_path, "-c", "1", "-W", "1", CONNECTIVITY_HOST],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            ok = result.returncode == 0
+            message = "Ping ok." if ok else "Ping failed."
+        except (OSError, subprocess.SubprocessError) as exc:
+            ok = False
+            message = f"Ping failed: {exc}"
+
+    if not ok:
+        method = "tcp"
+        try:
+            with socket.create_connection(
+                (CONNECTIVITY_HOST, CONNECTIVITY_PORT), timeout=1.5
+            ):
+                ok = True
+                message = "TCP connectivity ok."
+        except OSError as exc:
+            if ping_path:
+                message = f"Ping failed; TCP check failed: {exc}"
+            else:
+                message = f"TCP check failed: {exc}"
+
+    _CONNECTIVITY_CACHE.update(
+        {"ts": now, "ok": ok, "message": message, "method": method}
+    )
+    return ok, message, method
 
 
 def unifi_error_message(response, fallback: str) -> str:
@@ -465,8 +524,7 @@ def create_app() -> Flask:
                 site=session.get("unifi_site"),
             )
             flash(message, "success" if ok else "error")
-        return_url = pop_return_url()
-        return redirect(return_url or url_for("index"))
+        return redirect(url_for("index"))
 
     @app.get("/success")
     def success():
@@ -523,12 +581,11 @@ def create_app() -> Flask:
             site=session.get("unifi_site"),
         )
         flash(message, "success" if ok else "error")
-        return_url = pop_return_url()
-        return redirect(return_url or url_for("index"))
+        return redirect(url_for("index"))
 
     @app.get("/status")
     def status():
-        if not session.get("guest_authenticated"):
+        if not (session.get("guest_authenticated") or session.get("user")):
             return jsonify({"status": "unauthorized"}), 401
         mac = session.get("client_mac") or extract_client_mac_from_request(request)
         if not mac or not MAC_RE.match(mac):
@@ -536,7 +593,17 @@ def create_app() -> Flask:
         status_value, message = unifi_client_status(
             app, mac, site=session.get("unifi_site")
         )
-        return jsonify({"status": status_value, "message": message, "mac": mac})
+        internet_ok, internet_message, internet_method = check_internet_connectivity()
+        return jsonify(
+            {
+                "status": status_value,
+                "message": message,
+                "mac": mac,
+                "internet_ok": internet_ok,
+                "internet_message": internet_message,
+                "internet_method": internet_method,
+            }
+        )
 
     @app.get("/logout")
     def logout():
