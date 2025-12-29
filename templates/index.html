@@ -261,9 +261,12 @@
               placeholder="Enter guest password"
               autocomplete="off"
             >
-            {% if client_mac %}
-              <input type="hidden" name="mac" value="{{ client_mac }}">
-            {% endif %}
+            <input
+              type="hidden"
+              id="guest-mac"
+              name="client_mac"
+              value="{{ client_mac or '' }}"
+            >
             <button type="submit">Connect as guest</button>
           </form>
         </div>
@@ -283,51 +286,54 @@
           </div>
         {% endif %}
 
-        {% if user or guest_authenticated or client_mac %}
-          <div class="signed-in">
-            {% if user %}
-              <div class="card">
-                <h2>Guest password of the day</h2>
-                {% if guest_password %}
-                  <div class="password-display">{{ guest_password }}</div>
-                  <div class="helper">Share with guests. Changes daily.</div>
-                {% else %}
-                  <div class="helper">Wordlist is missing or empty.</div>
-                {% endif %}
-              </div>
-              <div class="card">
-                <h2>Add a device by MAC</h2>
-                <form class="device-form" method="post" action="{{ url_for('authorize_device') }}">
-                  <label for="device-mac">Device MAC address</label>
-                  <input
-                    id="device-mac"
-                    name="mac"
-                    type="text"
-                    placeholder="aa:bb:cc:dd:ee:ff"
-                    autocomplete="off"
-                  >
-                  <button type="submit">Authorize device</button>
-                </form>
-                {% if not unifi_configured %}
-                  <div class="helper">UniFi API is not configured yet.</div>
-                {% endif %}
-              </div>
-            {% endif %}
-            {% if client_mac %}
-              <div class="card" data-status-panel>
-                <h2>Device status</h2>
-                <div class="status-line">Checking {{ client_mac }}</div>
-                <div class="progress"><span></span></div>
-                <div class="status-message">Starting status check...</div>
-              </div>
-            {% else %}
-              <div class="card">
-                <h2>Device status</h2>
-                <div class="helper">Connect from a device to check its status.</div>
-              </div>
-            {% endif %}
+        <div class="signed-in">
+          {% if user %}
+            <div class="card">
+              <h2>Guest password of the day</h2>
+              {% if guest_password %}
+                <div class="password-display">{{ guest_password }}</div>
+                <div class="helper">Share with guests. Changes daily.</div>
+              {% else %}
+                <div class="helper">Wordlist is missing or empty.</div>
+              {% endif %}
+            </div>
+            <div class="card">
+              <h2>Add a device by MAC</h2>
+              <form class="device-form" method="post" action="{{ url_for('authorize_device') }}">
+                <label for="device-mac">Device MAC address</label>
+                <input
+                  id="device-mac"
+                  name="mac"
+                  type="text"
+                  placeholder="aa:bb:cc:dd:ee:ff"
+                  autocomplete="off"
+                >
+                <button type="submit">Authorize device</button>
+              </form>
+              {% if not unifi_configured %}
+                <div class="helper">UniFi API is not configured yet.</div>
+              {% endif %}
+            </div>
+          {% endif %}
+          <div class="card" data-status-panel data-mac="{{ client_mac or '' }}">
+            <h2>Device status</h2>
+            <div class="status-line">
+              {% if client_mac %}
+                Checking {{ client_mac }}
+              {% else %}
+                Detecting device...
+              {% endif %}
+            </div>
+            <div class="progress"><span></span></div>
+            <div class="status-message">
+              {% if client_mac %}
+                Starting status check...
+              {% else %}
+                Waiting for device details...
+              {% endif %}
+            </div>
           </div>
-        {% endif %}
+        </div>
 
         {% if user %}
           <div class="foot">
@@ -338,7 +344,6 @@
         {% endif %}
       </div>
     </div>
-    {% if client_mac %}
       <script>
         (() => {
           const panel = document.querySelector("[data-status-panel]");
@@ -347,8 +352,47 @@
           }
           const progress = panel.querySelector(".progress span");
           const message = panel.querySelector(".status-message");
+          const statusLine = panel.querySelector(".status-line");
+          const guestMacInput = document.getElementById("guest-mac");
           const maxAttempts = 20;
           let attempts = 0;
+          let mac = (panel.dataset.mac || "").trim();
+
+          const normalizeMac = (value) => {
+            if (!value) {
+              return "";
+            }
+            const cleaned = value.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+            if (cleaned.length !== 12) {
+              return "";
+            }
+            return cleaned.match(/.{1,2}/g).join(":");
+          };
+
+          const findMac = (text) => {
+            if (!text) {
+              return "";
+            }
+            const match = text.match(/(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}/);
+            return match ? normalizeMac(match[0]) : "";
+          };
+
+          const updateMac = (value) => {
+            const normalized = normalizeMac(value);
+            if (!normalized) {
+              return;
+            }
+            mac = normalized;
+            panel.dataset.mac = normalized;
+            if (statusLine) {
+              statusLine.textContent = `Checking ${normalized}`;
+            }
+            if (guestMacInput) {
+              guestMacInput.value = normalized;
+            }
+          };
+
+          updateMac(findMac(window.location.href));
 
           const setMessage = (text) => {
             if (message) {
@@ -363,12 +407,22 @@
             }
           };
 
+          const statusUrl = () => {
+            if (mac) {
+              return `{{ url_for('status') }}?mac=${encodeURIComponent(mac)}`;
+            }
+            return "{{ url_for('status') }}";
+          };
+
           const poll = () => {
             attempts += 1;
             setProgress((attempts / maxAttempts) * 100);
-            fetch("{{ url_for('status') }}", { headers: { "Accept": "application/json" } })
+            fetch(statusUrl(), { headers: { "Accept": "application/json" } })
               .then((response) => response.json())
               .then((data) => {
+                if (data.mac && !mac) {
+                  updateMac(data.mac);
+                }
                 if (data.status === "authorized") {
                   setProgress(100);
                   setMessage("Device is authorized.");
@@ -390,14 +444,12 @@
                 }
                 if (data.status === "error") {
                   setMessage(data.message || "Unable to check device status.");
-                  clearInterval(timer);
                   return;
                 }
                 setMessage("Checking device status...");
               })
               .catch(() => {
                 setMessage("Unable to reach status endpoint.");
-                clearInterval(timer);
               });
 
             if (attempts >= maxAttempts) {
@@ -410,6 +462,5 @@
           const timer = setInterval(poll, 3000);
         })();
       </script>
-    {% endif %}
   </body>
 </html>
