@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SSO Complete</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap");
+      :root {
+        color-scheme: light;
+        --bg: #f5f2ea;
+        --panel: #ffffff;
+        --text: #1d1b16;
+        --muted: #6b655a;
+        --accent: #1f6feb;
+        --border: #e2ded4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Trebuchet MS", Arial, sans-serif;
+        background: radial-gradient(circle at top left, #fdf9f2, #efe7d8);
+        color: var(--text);
+      }
+      .page {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.08);
+        max-width: 640px;
+        width: 100%;
+        padding: 36px;
+        animation: rise 0.6s ease both;
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 30px;
+        letter-spacing: -0.5px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .details {
+        background: #f6f2ea;
+        border-radius: 12px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+      .details strong {
+        color: var(--text);
+      }
+      .links a {
+        display: inline-block;
+        margin-right: 12px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="panel">
+        <h1>SSO sign-in complete</h1>
+        {% if user %}
+          <p>You are signed in. Next step is to allow this client through UniFi.</p>
+          <div class="details">
+            <div><strong>Name:</strong> {{ user.name or "Unknown" }}</div>
+            <div><strong>Email:</strong> {{ user.email or "Unknown" }}</div>
+            <div><strong>Subject:</strong> {{ user.sub or "Unknown" }}</div>
+          </div>
+        {% else %}
+          <p>No active session found. Please sign in again.</p>
+        {% endif %}
+        <div class="links">
+          <a href="{{ url_for('index') }}">Back to landing</a>
+          <a href="{{ url_for('logout') }}">Log out</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

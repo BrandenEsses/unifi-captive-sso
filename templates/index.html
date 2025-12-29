@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>UniFi Captive SSO</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap");
+      :root {
+        color-scheme: light;
+        --bg: #f5f2ea;
+        --panel: #ffffff;
+        --text: #1d1b16;
+        --muted: #6b655a;
+        --accent: #1f6feb;
+        --accent-dark: #1557b0;
+        --border: #e2ded4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Trebuchet MS", Arial, sans-serif;
+        background: radial-gradient(circle at top left, #fdf9f2, #efe7d8);
+        color: var(--text);
+      }
+      .page {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.08);
+        max-width: 760px;
+        width: 100%;
+        padding: 36px;
+        animation: rise 0.6s ease both;
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 32px;
+        letter-spacing: -0.5px;
+      }
+      p {
+        margin: 0 0 24px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .row {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--accent);
+        color: #fff;
+        border-radius: 12px;
+        padding: 14px 22px;
+        font-weight: 600;
+        text-decoration: none;
+        min-width: 200px;
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .cta:hover {
+        background: var(--accent-dark);
+        transform: translateY(-1px);
+      }
+      .guest {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 240px;
+        flex: 1;
+      }
+      .guest label {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .guest input {
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        font-size: 16px;
+      }
+      .alert {
+        margin-top: 18px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: #fff4d6;
+        border: 1px solid #f0d7a3;
+        color: #7a5a1f;
+        font-size: 14px;
+      }
+      .foot {
+        margin-top: 24px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .foot a {
+        color: var(--accent);
+      }
+      @media (max-width: 640px) {
+        .panel {
+          padding: 28px;
+        }
+        .cta {
+          width: 100%;
+        }
+        .guest {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="panel">
+        <h1>Connect to Wi-Fi</h1>
+        <p>Use SSO to continue, or enter a guest password on the right.</p>
+
+        <div class="row">
+          <a class="cta" href="{{ url_for('login') }}">Login with SSO</a>
+          <div class="guest">
+            <label for="guest-password">Guest password</label>
+            <input
+              id="guest-password"
+              name="guest_password"
+              type="password"
+              placeholder="Enter guest password"
+            >
+          </div>
+        </div>
+
+        {% if error %}
+          <div class="alert">{{ error }}</div>
+        {% elif not sso_configured %}
+          <div class="alert">
+            SSO is not configured yet. Set <code>OIDC_CLIENT_ID</code>,
+            <code>OIDC_CLIENT_SECRET</code>, and <code>OIDC_METADATA_URL</code>.
+          </div>
+        {% endif %}
+
+        {% if user %}
+          <div class="foot">
+            Signed in as {{ user.name or user.email }}.
+            <a href="{{ url_for('success') }}">Continue</a> or
+            <a href="{{ url_for('logout') }}">log out</a>.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </body>
+</html>
