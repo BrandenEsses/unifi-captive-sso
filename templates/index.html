@@ -199,6 +199,34 @@
         background: var(--accent-dark);
         transform: translateY(-1px);
       }
+      .continue-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 12px;
+        padding: 10px 16px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: #fff;
+        text-decoration: none;
+        font-weight: 600;
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .continue-button.is-hidden {
+        display: none;
+      }
+      .continue-button:hover {
+        background: var(--accent-dark);
+        transform: translateY(-1px);
+      }
+      .continue-hint {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .continue-hint.is-hidden {
+        display: none;
+      }
       .status-line {
         font-size: 14px;
         color: var(--muted);
@@ -333,6 +361,16 @@
                 <div class="status-message" data-status-internet>
                   Checking internet connectivity...
                 </div>
+                {% if return_url %}
+                  <a
+                    class="continue-button is-hidden"
+                    data-continue-button
+                    href="{{ return_url }}"
+                  >Continue to internet</a>
+                  <div class="continue-hint is-hidden" data-continue-hint>
+                    Tap after authorization if the portal does not close automatically.
+                  </div>
+                {% endif %}
               </div>
             {% else %}
               <div class="card">
@@ -361,6 +399,12 @@
           const authMessage = panel ? panel.querySelector("[data-status-auth]") : null;
           const internetMessage = panel
             ? panel.querySelector("[data-status-internet]")
+            : null;
+          const continueButton = panel
+            ? panel.querySelector("[data-continue-button]")
+            : null;
+          const continueHint = panel
+            ? panel.querySelector("[data-continue-hint]")
             : null;
           const statusLine = panel ? panel.querySelector(".status-line") : null;
           const guestMacInput = document.getElementById("guest-mac");
@@ -421,6 +465,15 @@
             }
           };
 
+          const showContinue = () => {
+            if (continueButton) {
+              continueButton.classList.remove("is-hidden");
+            }
+            if (continueHint) {
+              continueHint.classList.remove("is-hidden");
+            }
+          };
+
           const setProgress = (value) => {
             if (progress) {
               const width = Math.min(100, Math.max(0, value));
@@ -456,6 +509,9 @@
                 if (data.status === "authorized") {
                   setProgress(100);
                   setAuthMessage("Device is authorized.");
+                  if (data.internet_ok === true) {
+                    showContinue();
+                  }
                   clearInterval(timer);
                   return;
                 }
