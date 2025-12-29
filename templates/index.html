@@ -283,7 +283,7 @@
           </div>
         {% endif %}
 
-        {% if user or guest_authenticated %}
+        {% if user or guest_authenticated or client_mac %}
           <div class="signed-in">
             {% if user %}
               <div class="card">
@@ -313,16 +313,19 @@
                 {% endif %}
               </div>
             {% endif %}
-            <div class="card" data-status-panel>
-              <h2>Device status</h2>
-              {% if client_mac %}
+            {% if client_mac %}
+              <div class="card" data-status-panel>
+                <h2>Device status</h2>
                 <div class="status-line">Checking {{ client_mac }}</div>
                 <div class="progress"><span></span></div>
                 <div class="status-message">Starting status check...</div>
-              {% else %}
-                <div class="helper">Sign in from a device to check its status.</div>
-              {% endif %}
-            </div>
+              </div>
+            {% else %}
+              <div class="card">
+                <h2>Device status</h2>
+                <div class="helper">Connect from a device to check its status.</div>
+              </div>
+            {% endif %}
           </div>
         {% endif %}
 
@@ -335,7 +338,7 @@
         {% endif %}
       </div>
     </div>
-    {% if (user or guest_authenticated) and client_mac %}
+    {% if client_mac %}
       <script>
         (() => {
           const panel = document.querySelector("[data-status-panel]");
